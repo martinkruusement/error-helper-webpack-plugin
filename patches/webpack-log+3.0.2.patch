@@ -1,0 +1,16 @@
+diff --git a/node_modules/webpack-log/lib/index.js b/node_modules/webpack-log/lib/index.js
+index 40dba46..b5b4fdd 100644
+--- a/node_modules/webpack-log/lib/index.js
++++ b/node_modules/webpack-log/lib/index.js
+@@ -33,7 +33,10 @@ const getLogger = (opts) => {
+     level: ({ level }) => {
+       const color = colors[level];
+       const symbol = ['error', 'warn'].includes(level) ? symbols.whoops : symbols.ok;
+-      return chalk[color](`${symbol} ${options.name}: `);
++      if(opts.name) {
++        return chalk[color](`${symbol} ${opts.name}: `);
++      };
++      return chalk[color](`${symbol} `);
+     },
+     template: '{{level}}'
+   };
