@@ -37,6 +37,15 @@ const WebpackErrorFormatterPlugin = require('error-helper-webpack-plugin/Webpack
   webpack.chainWebpack((config) => {
     /** @type {WebpackErrorFormatterPluginConf} */
     const errorHelperConfig = {
+      // Ask AI to figure out what the issue is:
+      analyzer: {
+        active: true,
+        engine: 'OpenAI'
+        // apiKey: '...', // TODO: configurable api key or env var name
+        // (!) currently needs OPENAI_API_KEY env variable available to python
+      },
+
+      // Pipe it to TTS:
       tts: {
         active: true,
         engine: 'ElevenLabs', // 'ElevenLabs' needs an API key | 'local' uses "say 'What to say.'" builtin TTS engine on MacOS
@@ -48,12 +57,11 @@ const WebpackErrorFormatterPlugin = require('error-helper-webpack-plugin/Webpack
            in the default Python env will also work
         */
       },
-      log: {
-        level: 'trace'
-      },
+
+      log: { level: 'trace' },
       bail: true, // Stop compilation with process.exit
       debug: true, // Print more stuff
-      popup: 5 // seconds, remove to disable
+      popup: 5 // seconds, remove to disable the popup
     }
     
     config.plugin('WebpackErrorFormatterPlugin').use(WebpackErrorFormatterPlugin, [errorHelperConfig])

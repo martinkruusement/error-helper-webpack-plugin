@@ -1,17 +1,22 @@
 const path = require('path')
 const osascript = require('node-osascript')
 const getLogger = require('webpack-log')
+const { isString } = require('radash')
 
-const Chalk = import("chalk")
+const StripAnsi = import('strip-ansi')
+let stripAnsi
+const Chalk = import('chalk')
 let chalk
-const Execa = import("execa")
+const Execa = import('execa')
 let execa
 
 let print // logger
+const _tag = '▓\n▓ [  Webpack error analyzer ]'
+let tag = _tag // add color codes when Chalk loaded
 
 /** @import { Compiler, Stats, WebpackError } from 'webpack' */
-/** @import {WebpackErrorFormatterPluginConf} from './WebpackErrorFormatterPlugin' */
-/** @import {WebpackErrorFormatterPluginMessage} from './WebpackErrorFormatterPlugin' */
+/** @import {WebpackErrorFormatterPluginConf} from './WebpackErrorFormatterPlugin.d.ts' */
+/** @import {WebpackErrorFormatterPluginMessage} from './WebpackErrorFormatterPlugin.d.ts' */
 
 /** 
  * Webpack Error Formatter Plugin
@@ -37,10 +42,14 @@ class WebpackErrorFormatterPlugin {
    */
   async apply (compiler) {
     compiler.hooks.done.tapAsync('WebpackErrorFormatterPlugin',
-      /** @param {Stats} stats - The Webpack compiler instance. */
+      /**
+       * @param {Stats} stats - The Webpack compiler instance.
+       * @param {Function} callback - Continue the build chain
+       */
       async (stats, callback) => {
-
+        stripAnsi ??= (await StripAnsi).default
         chalk ??= new (await Chalk).Chalk()
+        if (tag === _tag) tag = chalk.red(_tag)
         execa ??= await Execa
 
         if (!stats.compilation.errors?.length) {
@@ -52,7 +61,7 @@ class WebpackErrorFormatterPlugin {
         const err = stats.compilation.errors[0]
         if (this.conf?.debug) printError(err)
 
-        const message = buildMessage(err, this.conf)
+        const message = await buildMessage(err, this.conf)
         if (this.conf?.debug) print.info('Error message built:', message)
         if (this.conf?.tts && this.conf?.tts?.active !== false) {
           playTTSMessage(message, this.conf)
@@ -63,7 +72,7 @@ class WebpackErrorFormatterPlugin {
         }
 
         if (this.conf?.bail) {
-          // eslint-disable-next-line n/no-process-exit -- process.exitCode = 1 continues to compile anyway
+          // eslint-disable-next-line n/no-process-exit -- process.exitCode = 1 continues to compile anyway 
           wait(message.time * 1000).then(() => { process.exit(1) })
         }
 
@@ -100,12 +109,69 @@ function createLoggerAdapter (conf) {
  * @param {WebpackErrorFormatterPluginConf} conf - Plugin configuration
  * @returns {WebpackErrorFormatterPluginMessage} - A sentence describing what went wrong.
  */
-function buildMessage (err, conf) {
-  const path = err.module.resourceResolveData.path.split('/')
+/* eslint-disable-next-line  sonarjs/cognitive-complexity -- linear enough */
+async function buildMessage (err, conf) {
+  console.error(tag, 'INCOMING ERROR MESSAGE', err.message, conf)
+
+  stripAnsi ??= (await StripAnsi).default
+
+  console.log(tag, 'buildMessage Error:', err)
+  console.log(tag, 'buildMessage conf:', conf)
+  if (!err?.module) {
+    console.error('NO err.MODULE')
+    console.error(err.message)
+    console.error(err.cause)
+    console.error(err.stack)
+    console.log(Object.keys(err))
+    console.log(tag, 'Is this a regular TS error?.')
+    console.log(tag, 'Ignore it.')
+    console.log(tag, 'Shown anyway already.')
+    return
+  }
+
+  let cause = null
+  const path = err?.module?.resourceResolveData?.path?.split('/') ?? ['UNKNOWN_FILE']
+  const message = err?.message ?? 'NO_MESSAGE'
   const fileName = path.pop()
   const filePath = path.join('/')
-  const lines = err.message.split('\n')
-  const cause = lines[1].slice(lines[1].indexOf('] ') + 2).slice(0, lines[1].lastIndexOf(' (') - 2)
+  const lines = message.split('\n')
+
+  console.warn('>>>> line 1', isString(lines?.[1]), lines?.[1])
+  if (isString(lines?.[1])) {
+    console.log('stripAnsi:')
+    console.log(typeof stripAnsi, stripAnsi)
+
+    cause = stripAnsi(lines?.[1])
+    const endOfTag = cause.indexOf('] ') + 2
+    const beginningOfSource = cause.lastIndexOf(' (') - 2
+    cause = cause?.slice(endOfTag).slice(0, beginningOfSource)
+  }
+
+  cause ??= err.message
+
+  console.log('[WPEFP]', '------ lines -----')
+  for (const l in lines) {
+    console.log(l, '=>', lines[l])
+  }
+  console.log('[WPEFP]', '------ lines -----')
+
+  console.warn(tag, '------ pre-vue-cause -----')
+  console.error(cause)
+  console.warn(tag, '------ pre-vue-cause -----')
+
+  if (!cause) {
+    cause = lines.find((l) => l.includes('VueCompilerError:'))
+    console.log('[WPEFP]', 'Looking for alternative cause [VueCompilerError?]', 'lines', lines)
+    if (cause) {
+      cause = cause.split('VueCompilerError:').pop().trim()
+    }
+    if (isString(cause)) {
+      if (cause.endsWith('.')) cause = cause.slice(0, -1)
+    }
+  }
+
+  console.error(tag, 'CAUSE CONFIRMED:', cause)
+
   let useLineContext = true
   let lineNumber = 0
   let columnNumber = 0
@@ -114,10 +180,20 @@ function buildMessage (err, conf) {
   let lineSection = ''
   let contextSection = ''
 
+  console.log(tag, 'cause:', cause)
+
   const fileNameOptimized = fileName.toLowerCase().endsWith('.vue') ? `${fileName.slice(0, -4)} component` : fileName
   if (cause.includes('expected ","')) {
     explanation = `${fileNameOptimized} needs a comma`
     useLineContext = true
+  }
+  if (cause.includes('Duplicate attribute')) {
+    explanation = `${fileNameOptimized} has a duplicate attribute`
+    useLineContext = true
+  }
+
+  if (!isString(lines[1])) {
+    useLineContext = false
   }
 
   if (useLineContext) {
@@ -167,6 +243,17 @@ function buildMessage (err, conf) {
     print.info('| explanation:', explanation)
   }
 
+  // TODO:  refactor: only do the stuff previously if no analyzer engine is active 
+  const analyzer = conf?.analyzer
+  if (analyzer?.active) {
+    if (analyzer.engine === 'OpenAI') {
+      console.log(tag, 'OKAYHERE:', err.message)
+      const result = await openaiErrorAnalyzer(err, conf)
+      console.log(tag, 'OPENAI RESULT:', result)
+      summary = result
+    }
+  }
+
   const output = {
     title: 'Compilation failed',
     frame: getCodeFrame(err),
@@ -186,8 +273,12 @@ function buildMessage (err, conf) {
  * @returns {string} - Formatted lines at error source.
  */
 function getCodeFrame (err, conf) {
-  const lines = err.message.split('\n').slice(4)
+  console.warn('>>> stripAnsi getCodeFrame', stripAnsi)
+
+  const lines = err.message.split('\n').slice(4).map(stripAnsi)
+  console.warn(tag, 'getCodeFrame BEFORE', err.message)
   const frame = lines.join('\n')
+  console.warn(tag, 'getCodeFrame AFTER', frame)
   return frame
 }
 
@@ -254,6 +345,7 @@ function localTTS (message, conf) {
  * @param {WebpackErrorFormatterPluginConf} conf - Plugin configuration
  */
 function elevenLabsTTS (message, conf) {
+  const debug = conf?.debug ?? false
   try {
     const cliArgs = [`${__dirname}/elevenlabs-tts-stream.py`, message.summary]
     const cliArgsPreview = [`${__dirname}/elevenlabs-tts-stream.py`, `"${message.summary}"`]
@@ -261,13 +353,42 @@ function elevenLabsTTS (message, conf) {
     if (conf.tts.apiKey) cliArgsPreview.push(conf.tts.apiKey)
     if (conf.tts.apiKey) cliArgs.push(conf.tts.voiceId)
     if (conf.tts.apiKey) cliArgsPreview.push(conf.tts.voiceId)
-    if (conf?.debug) print.info('Run:\n', cliArgsPreview.join(' '))
+    if (debug) print.info('Run:\n', cliArgsPreview.join(' '))
     const ttsProcess = execa.execa('python3', cliArgs, { detached: true })
     ttsProcess.unref()
   } catch (e) {
-    print.error('Could not start the TTS Python3 script:')
+    print.error("Could not start 'elevenlabs-tts-stream.py':")
     print.error(e)
   }
+}
+
+/** 
+ * @param {WebpackErrorFormatterPluginMessage} errorFramePlain - Error from Webpack Compiler
+ * @param errorFramePlain
+ * @param {WebpackErrorFormatterPluginConf} conf - Plugin configuration
+ */
+async function openaiErrorAnalyzer (errorFramePlain, conf) {
+  console.info(tag, 'openaiErrorAnalyzer', errorFramePlain, conf)
+  const debug = conf?.debug ?? false
+  let response = 'No response.'
+  const errorFrameB64 = btoa(errorFramePlain)
+  console.info(tag, 'Base64 ENCODED ERROR:', errorFrameB64)
+  try {
+    const cliArgs = [`${__dirname}/openai-error-analyzer.py`, errorFrameB64]
+    const cliArgsPreview = [`${__dirname}/elevenlabs-tts-stream.py`, `"${errorFrameB64}"`]
+    if (conf?.apiKey) cliArgs.push(conf.apiKey)
+    if (debug) print.info('Run:\n', cliArgsPreview.join(' '))
+    const analyzerProcess = await execa.execa('python3', cliArgs)
+    response = analyzerProcess.stdout
+    console.log('WE HAVE AN EXPLANATION:', analyzerProcess)
+    return response
+  } catch (e) {
+    response = "Could not start 'openai-error-analyzer.py':"
+    print.error("Could not start 'openai-error-analyzer.py':")
+    print.error(e)
+  }
+
+  return response
 }
 
 function printError (err, debug) {
